@@ -8,7 +8,7 @@ A Python script that generates single-file HTML technical and fundamental analys
 
 For any HK-listed stock, the script:
 
-1. Fetches live OHLCV kline data and market snapshot from FutuOpenD
+1. Fetches live OHLCV kline data, market snapshot, capital flow, and HSI benchmark data from FutuOpenD
 2. Computes technical indicators across three timeframes
 3. Generates a dark-themed single-file HTML report with interactive Chart.js and Plotly charts loaded via CDN
 4. Saves the report as `{CODE}_analysis_{YYYYMMDD}.html` in the same directory
@@ -64,17 +64,17 @@ Two rows of 4 stat cards:
 ### Short-Term Analysis — Daily `3–10 day view`
 - **Indicators:** EMA 9 / 20 / 50 + SMA200 (institutional reference)
 - **Charts:** Price & EMA · Bollinger Bands · RSI(14) & MACD
-- **Signals:** Price vs EMA20/50/SMA200 · EMA9/20 crossover · RSI · MACD · BB · ADX
+- **Signals:** Price vs EMA20/50/SMA200 · EMA9/20 crossover · RSI · MACD · BB · ADX · Volume
 
 ### Medium-Term Analysis — Weekly `3–8 week view`
 - **Indicators:** EMA 9 / 20 / 50 + SMA200 (structural reference)
 - **Charts:** Price & EMA · Bollinger Bands · RSI(14) & MACD
-- **Signals:** Price vs EMA20/50/SMA200 · EMA20/50 crossover · RSI · MACD · BB · ADX
+- **Signals:** Price vs EMA20/50/SMA200 · EMA20/50 crossover · RSI · MACD · BB · ADX · Volume · RS vs HSI (4W)
 
 ### Long-Term Analysis — Weekly SMA `3–6 month view`
 - **Indicators:** SMA 20 / 50 / 200 (all weekly)
 - **Charts:** Price & SMA · Bollinger Bands · RSI(14) & MACD
-- **Signals:** Price vs SMA50/200 · SMA20/50 crossover · RSI · MACD · BB · ADX
+- **Signals:** Price vs SMA50/200 · SMA20/50 crossover · RSI · MACD · BB · ADX · RS vs HSI (13W)
 - **Fundamental data:** P/E, P/B, EPS, Dividend Yield, Market Cap, Net Profit, etc.
 - **Fundamental view:** Quantitative verdict + qualitative commentary
 
@@ -88,8 +88,10 @@ Two rows of 4 stat cards:
 | SMA | 20 / 50 / 200 | Long term (weekly bars) |
 | RSI | Wilder's 14 | `ewm(alpha=1/14, adjust=False)` |
 | MACD | 12 / 26 / 9 | Gerald Appel standard definition |
-| Bollinger Bands | SMA20 ± 2σ | ADX-context labels + squeeze detection |
+| Bollinger Bands | SMA20 ± 2σ | ADX-context labels + squeeze detection + compact range context |
 | ADX | 14 | +DI / -DI included |
+| ATR | 14 | Daily volatility stat card, not a directional signal |
+| Relative Strength vs HSI | 4W / 13W | Stock return minus `HK.800000` HSI return |
 
 ### MACD Momentum confirmation windows
 | Timeframe | Window | Rule |
@@ -103,6 +105,23 @@ Labels are ADX-context aware:
 - **ADX > 25 + price outside band** → "Band walking — trend continuation"
 - **ADX < 20 + price outside band** → "Overbought/oversold in range"
 - **BW < 50% of 20-bar avg** → "⚡ Squeeze — volatility contraction"
+- **Within bands only** → add compact range context: `20D High`, `20D Low`, `In 20D Range`, `13W High`, `13W Low`, or `In 13W Range`
+- Range context uses close vs prior range with a 0.5% buffer; squeeze and outside-band labels are unchanged
+
+### Relative Strength vs HSI interpretation
+Relative strength compares stock performance against the Hang Seng Index (`HK.800000`):
+- **Medium-term:** 4W / 20D return difference; bullish ≥ +3.0pp, bearish ≤ -3.0pp
+- **Long-term:** 13W / 60D return difference; bullish ≥ +5.0pp, bearish ≤ -5.0pp
+- **Short-term:** intentionally excluded because 5D relative performance is too noisy
+
+### Signal scoring
+Signal rows are represented as structured data:
+
+```python
+{"text": "Bullish — Upper half · 20D High · BW: 8.4%", "direction": "bull"}
+```
+
+`direction` is one of `bull`, `bear`, or `neut`. HTML tag colour and `overall_verdict()` scoring use this explicit direction instead of inferring sentiment from display text.
 
 ---
 
@@ -112,10 +131,11 @@ Labels are ADX-context aware:
 |------|--------|-------------|
 | Daily kline | `request_history_kline` K_DAY | ~500 bars (~2 years) |
 | Weekly kline | `request_history_kline` K_WEEK | ~400 bars (~8 years) |
+| HSI benchmark kline | `request_history_kline` for `HK.800000` | Daily + weekly |
 | Market snapshot | `get_market_snapshot` | Latest |
 | Capital distribution | `get_capital_distribution` | Today |
 
-Full history is paginated using `page_req_key`. Only the most recent N bars are kept after fetch. Monthly kline is no longer used — long-term analysis uses weekly SMA20/50/200 for consistency and to ensure SMA200 is computable for all stocks.
+Full history is paginated using `page_req_key`. Only the most recent N bars are kept after fetch. Monthly kline is no longer used — long-term analysis uses weekly SMA20/50/200 for consistency and to ensure SMA200 is computable for all stocks. HSI benchmark data is fetched separately for medium- and long-term relative strength signals.
 
 ---
 
@@ -192,8 +212,6 @@ TRADING_DAYS_YEAR = 252   # used for 52-week range calculation
 
 | # | Item | Priority | Notes |
 |---|------|----------|-------|
-| 1 | Relative strength vs benchmark | Medium | Add benchmark-relative performance across timeframes: 5D short-term as secondary context, 4W / 20D medium-term, and 13W / 60D long-term. If `get_owner_plate()` includes `HK.LIST23450` / 科网股, use `HK.800700` HSTECH as benchmark; otherwise use `HK.800000` HSI or a closer sector benchmark when available. Bullish / bearish thresholds: ±1.5 percentage points short, ±3.0pp medium, ±5.0pp long; neutral inside those ranges. Requires benchmark kline fetch. |
-| 2 | Bollinger range-breakout context | Low | Keep Bollinger Bands as the scored signal, but enrich its text with 20-day / 13-week high-low context such as `20D high breakout`, `20D low breakdown`, or `inside 20D range`. Avoid adding Donchian as a separate correlated signal. |
-| 3 | Signal scoring as structured data | Low | `tag()` and `overall_verdict()` infer direction from substrings — brittle if wording changes. Refactor `signal_summary()` to return `{text, direction}` tuples. |
-| 4 | Refactor `add_ema_indicators` / `add_sma_indicators` | Low | 80% shared code. Internal housekeeping only, zero user-visible impact. |
-| 5 | Landing page (`index.html`) | Low | Auto-generated index of all reports with verdict badges, price, RSI, P/E. Separate `index.py` script, sorted by signal strength. |
+| 1 | Refactor `add_ema_indicators` / `add_sma_indicators` | Low | 80% shared code. Internal housekeeping only, zero user-visible impact. |
+| 2 | Split `analyze.py` into focused modules | Low | Refactor-only change with no report-output change. Target modules: `utils.py` (`h()`, `fmt_large()`, `normalize_stock_code()`), `indicators.py` (`sma()`, `ema()`, `rsi()`, `macd()`, `bollinger()`, `atr()`, `adx()`, indicator-enrichment functions), `fetch.py`, `signals.py` including RS signal logic, `charts.py`, and `report.py` for the HTML template/helpers. Keep CLI parsing and constants in `analyze.py`, but move `STOCK_CODE` parsing inside `main()` to avoid import-time side effects. Only `fetch.py` should import Futu; all other modules should remain importable/testable without Futu OpenD. |
+| 3 | Landing page (`index.html`) | Low | Auto-generated index of all reports with verdict badges, price, ATR, P/E. Separate `index.py` script, sorted by signal strength. |

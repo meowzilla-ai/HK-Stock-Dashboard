@@ -305,6 +305,15 @@ def fetch_fundamental(quote_ctx, code):
 
 # ── signal summary ────────────────────────────────────────────────────────────
 
+def sig(text, direction):
+    """Structured signal with display text and explicit scoring direction."""
+    direction = str(direction).lower()
+    direction = {"bullish": "bull", "bearish": "bear", "neutral": "neut"}.get(direction, direction)
+    if direction not in {"bull", "bear", "neut"}:
+        direction = "neut"
+    return {"text": text, "direction": direction}
+
+
 def macd_momentum_label(hist_series, n_confirm):
     """
     Compute MACD histogram momentum label with directional arrow prefix.
@@ -322,7 +331,7 @@ def macd_momentum_label(hist_series, n_confirm):
     """
     needed = n_confirm + 1          # +1 boundary bar for zero-cross detection
     if len(hist_series) < needed:
-        return "→ Consolidating · insufficient data"
+        return sig("→ Consolidating · insufficient data", "neut")
 
     bars    = hist_series.iloc[-needed:].tolist()
     current = bars[-1]
@@ -336,16 +345,16 @@ def macd_momentum_label(hist_series, n_confirm):
     marginal  = abs(current) < marginal_thresh
     hist_str  = f"{current:.2f}"
 
-    def _lbl(arrow, text, marg=False):
+    def _lbl(arrow, text, direction="neut", marg=False):
         s = f"{arrow} {text} · {hist_str}"
-        return s + " (marginal)" if marg else s
+        return sig(s + " (marginal)" if marg else s, "neut" if marg else direction)
 
     # Step 1: Zero-cross (highest priority) — scan full window including boundary bar
     for i in range(1, len(bars)):
         if bars[i - 1] < 0 and bars[i] >= 0:
-            return f"↑ Momentum crossover — bullish · {hist_str}"
+            return sig(f"↑ Momentum crossover — bullish · {hist_str}", "bull")
         if bars[i - 1] >= 0 and bars[i] < 0:
-            return f"↓ Momentum crossover — bearish · {hist_str}"
+            return sig(f"↓ Momentum crossover — bearish · {hist_str}", "bear")
 
     # Step 2: Direction over confirmation window
     confirm = bars[-n_confirm:]
@@ -358,29 +367,29 @@ def macd_momentum_label(hist_series, n_confirm):
         # Daily: 4-of-5 bars majority → 3-of-4 diffs
         thresh = n_d - 1   # 3 out of 4
         if current > 0:
-            if rising == n_d:        return _lbl("↑↑", "Strengthening bullish", marginal)
-            if rising >= thresh:     return _lbl("↑",  "Bullish momentum building", marginal)
+            if rising == n_d:        return _lbl("↑↑", "Strengthening bullish", "bull", marginal)
+            if rising >= thresh:     return _lbl("↑",  "Bullish momentum building", "bull", marginal)
             if falling >= thresh:
                 text = "Weakening bullish · X-over soon" if near_zero else "Weakening bullish"
-                return _lbl("↓", text, marginal)
+                return _lbl("↓", text, marg=marginal)
         elif current < 0:
-            if falling == n_d:       return _lbl("↓↓", "Strengthening bearish", marginal)
-            if falling >= thresh:    return _lbl("↓",  "Bearish momentum building", marginal)
+            if falling == n_d:       return _lbl("↓↓", "Strengthening bearish", "bear", marginal)
+            if falling >= thresh:    return _lbl("↓",  "Bearish momentum building", "bear", marginal)
             if rising >= thresh:
                 text = "Weakening bearish · X-over soon" if near_zero else "Weakening bearish"
-                return _lbl("↑", text, marginal)
+                return _lbl("↑", text, marg=marginal)
     else:
         # Weekly: all-3-agree → both diffs must match
         if current > 0:
-            if rising == n_d:        return _lbl("↑↑", "Strengthening bullish", marginal)
+            if rising == n_d:        return _lbl("↑↑", "Strengthening bullish", "bull", marginal)
             if falling == n_d:
                 text = "Weakening bullish · X-over soon" if near_zero else "Weakening bullish"
-                return _lbl("↓", text, marginal)
+                return _lbl("↓", text, marg=marginal)
         elif current < 0:
-            if falling == n_d:       return _lbl("↓↓", "Strengthening bearish", marginal)
+            if falling == n_d:       return _lbl("↓↓", "Strengthening bearish", "bear", marginal)
             if rising == n_d:
                 text = "Weakening bearish · X-over soon" if near_zero else "Weakening bearish"
-                return _lbl("↑", text, marginal)
+                return _lbl("↑", text, marg=marginal)
 
     return _lbl("→", "Consolidating")
 
@@ -406,17 +415,18 @@ def signal_summary(df, use_ema=True, include_ma4=False, mom_df=None, macd_confir
         n1, n2, n3 = "SMA20", "SMA50", "SMA200"
 
     def _ma_sig(price, ma_val, above_label, below_label, name):
-        """Build a signal string for price vs MA with gap %, handling NaN gracefully."""
+        """Build a structured signal for price vs MA with gap %, handling NaN gracefully."""
         try:
             f = float(ma_val)
             if math.isnan(f):
-                return f"N/A (insufficient history) · {name}: N/A"
+                return sig(f"N/A (insufficient history) · {name}: N/A", "neut")
             label = above_label if price > f else below_label
+            direction = "bull" if price > f else "bear"
             gap = (price - f) / f * 100
             gap_str = f"+{gap:.1f}%" if gap >= 0 else f"{gap:.1f}%"
-            return f"{label} · {name}: {f:.2f} ({gap_str})"
+            return sig(f"{label} · {name}: {f:.2f} ({gap_str})", direction)
         except Exception:
-            return f"N/A · {name}: N/A"
+            return sig(f"N/A · {name}: N/A", "neut")
 
     ma1_v = float(last["ma1"])
     ma2_v = float(last["ma2"])
@@ -434,17 +444,19 @@ def signal_summary(df, use_ema=True, include_ma4=False, mom_df=None, macd_confir
     if use_mid_cross:
         # Medium-term: EMA20 vs EMA50 — has the multi-week trend shifted?
         if math.isnan(ma2_v) or math.isnan(ma3_v):
-            sigs[f"{n2} vs {n3}"] = f"N/A (insufficient history) · {n2}: N/A / {n3}: N/A"
+            sigs[f"{n2} vs {n3}"] = sig(f"N/A (insufficient history) · {n2}: N/A / {n3}: N/A", "neut")
         else:
             cross_lbl = "Bullish crossover" if ma2_v > ma3_v else "Bearish crossover"
-            sigs[f"{n2} vs {n3}"] = f"{cross_lbl} · {n2}: {ma2_v:.2f} / {n3}: {ma3_v:.2f}"
+            direction = "bull" if ma2_v > ma3_v else "bear"
+            sigs[f"{n2} vs {n3}"] = sig(f"{cross_lbl} · {n2}: {ma2_v:.2f} / {n3}: {ma3_v:.2f}", direction)
     else:
         # Short-term: EMA9 vs EMA20 — short swing momentum
         if math.isnan(ma1_v) or math.isnan(ma2_v):
-            sigs[f"{n1} vs {n2}"] = f"N/A (insufficient history) · {n1}: N/A / {n2}: N/A"
+            sigs[f"{n1} vs {n2}"] = sig(f"N/A (insufficient history) · {n1}: N/A / {n2}: N/A", "neut")
         else:
             cross_lbl = "Bullish crossover" if ma1_v > ma2_v else "Bearish crossover"
-            sigs[f"{n1} vs {n2}"] = f"{cross_lbl} · {n1}: {ma1_v:.2f} / {n2}: {ma2_v:.2f}"
+            direction = "bull" if ma1_v > ma2_v else "bear"
+            sigs[f"{n1} vs {n2}"] = sig(f"{cross_lbl} · {n1}: {ma1_v:.2f} / {n2}: {ma2_v:.2f}", direction)
 
     # RSI & MACD: use mom_df if provided, otherwise fall back to df
     m_last = mom_df.iloc[-1] if mom_df is not None else last
@@ -452,12 +464,14 @@ def signal_summary(df, use_ema=True, include_ma4=False, mom_df=None, macd_confir
     mom_label = " (Weekly)" if mom_df is not None else ""
 
     r = m_last["rsi14"]
-    if r > 70:   sigs[f"RSI(14){mom_label}"] = f"{r:.1f} — Overbought"
-    elif r < 30: sigs[f"RSI(14){mom_label}"] = f"{r:.1f} — Oversold"
-    else:        sigs[f"RSI(14){mom_label}"] = f"{r:.1f} — Neutral"
+    if r > 70:   sigs[f"RSI(14){mom_label}"] = sig(f"{r:.1f} — Overbought", "bear")
+    elif r < 30: sigs[f"RSI(14){mom_label}"] = sig(f"{r:.1f} — Oversold", "bull")
+    else:        sigs[f"RSI(14){mom_label}"] = sig(f"{r:.1f} — Neutral", "neut")
 
     ml, ms = m_last["macd_line"], m_last["macd_signal"]
-    sigs[f"MACD{mom_label}"] = (f"{'Bullish (MACD > Signal)' if ml > ms else 'Bearish (MACD < Signal)'} · {ml:.2f} / {ms:.2f}")
+    macd_direction = "bull" if ml > ms else "bear"
+    macd_label = "Bullish (MACD > Signal)" if ml > ms else "Bearish (MACD < Signal)"
+    sigs[f"MACD{mom_label}"] = sig(f"{macd_label} · {ml:.2f} / {ms:.2f}", macd_direction)
 
     mom_hist = mom_df["macd_hist"] if mom_df is not None else df["macd_hist"]
     sigs[f"MACD Momentum{mom_label}"] = macd_momentum_label(mom_hist, macd_confirm)
@@ -469,12 +483,12 @@ def signal_summary(df, use_ema=True, include_ma4=False, mom_df=None, macd_confir
     adx_trending = adx_v > 25
     if adx_v > 25:
         direction = "Bullish trend" if pdi > mdi else "Bearish trend"
-        sigs["ADX(14)"] = f"{adx_v:.1f} — {direction} (trending) · +DI: {pdi:.1f} / -DI: {mdi:.1f}"
+        sigs["ADX(14)"] = sig(f"{adx_v:.1f} — {direction} (trending) · +DI: {pdi:.1f} / -DI: {mdi:.1f}", "bull" if pdi > mdi else "bear")
     elif adx_v > 20:
         direction = "bullish bias" if pdi > mdi else "bearish bias"
-        sigs["ADX(14)"] = f"{adx_v:.1f} — Weakening trend ({direction}) · +DI: {pdi:.1f} / -DI: {mdi:.1f}"
+        sigs["ADX(14)"] = sig(f"{adx_v:.1f} — Weakening trend ({direction}) · +DI: {pdi:.1f} / -DI: {mdi:.1f}", "neut")
     else:
-        sigs["ADX(14)"] = f"{adx_v:.1f} — Ranging / no clear trend · +DI: {pdi:.1f} / -DI: {mdi:.1f}"
+        sigs["ADX(14)"] = sig(f"{adx_v:.1f} — Ranging / no clear trend · +DI: {pdi:.1f} / -DI: {mdi:.1f}", "neut")
 
     # ── Bollinger Bands (ADX-context-aware + squeeze detection) ───────────────
     bu  = float(last["bb_upper"])
@@ -484,25 +498,52 @@ def signal_summary(df, use_ema=True, include_ma4=False, mom_df=None, macd_confir
     bw_cur    = float(bw_series.iloc[-1])
     bw_avg20  = float(bw_series.iloc[-20:].mean()) if len(bw_series) >= 20 else bw_cur
 
+    def _range_context():
+        """Compact close-based range context for within-band BB signals."""
+        n_bars, label = (13, "13W") if (use_mid_cross or not use_ema) else (20, "20D")
+        if len(df) < n_bars + 1:
+            return "Range N/A", "range"
+
+        prior_closes = df["close"].iloc[-(n_bars + 1):-1]
+        prior_high = float(prior_closes.max())
+        prior_low = float(prior_closes.min())
+        if math.isnan(prior_high) or math.isnan(prior_low):
+            return "Range N/A", "range"
+
+        # 0.5% buffer treats near-tests as range extremes without overreacting to tiny misses.
+        near_high = c >= prior_high * 0.995
+        near_low = c <= prior_low * 1.005
+        if near_high and not near_low:
+            return f"{label} High", "high"
+        if near_low and not near_high:
+            return f"{label} Low", "low"
+        return f"In {label} Range", "range"
+
     # Step 1: Squeeze — volatility contraction (highest priority)
     if bw_cur < 0.50 * bw_avg20:
-        sigs["Bollinger Bands"] = (f"⚡ Squeeze — volatility contraction · "
-                                   f"BW: {bw_cur:.1f}% (avg: {bw_avg20:.1f}%)")
+        sigs["Bollinger Bands"] = sig((f"⚡ Squeeze — volatility contraction · "
+                                       f"BW: {bw_cur:.1f}% (avg: {bw_avg20:.1f}%)"), "neut")
     # Step 2: Price outside bands — interpret using ADX context
     elif c > bu:
         if adx_trending:
-            sigs["Bollinger Bands"] = f"Band walking upper — trend continuation (ADX {adx_v:.1f}) · Upper: {bu:.2f}"
+            sigs["Bollinger Bands"] = sig(f"Band walking upper — trend continuation (ADX {adx_v:.1f}) · Upper: {bu:.2f}", "bull")
         else:
-            sigs["Bollinger Bands"] = f"Above upper — overbought in range (ADX {adx_v:.1f}) · Upper: {bu:.2f}"
+            sigs["Bollinger Bands"] = sig(f"Above upper — overbought in range (ADX {adx_v:.1f}) · Upper: {bu:.2f}", "bear")
     elif c < bl:
         if adx_trending:
-            sigs["Bollinger Bands"] = f"Band walking lower — trend continuation (ADX {adx_v:.1f}) · Lower: {bl:.2f}"
+            sigs["Bollinger Bands"] = sig(f"Band walking lower — trend continuation (ADX {adx_v:.1f}) · Lower: {bl:.2f}", "bear")
         else:
-            sigs["Bollinger Bands"] = f"Below lower — oversold in range (ADX {adx_v:.1f}) · Lower: {bl:.2f}"
-    # Step 3: Within bands — show which half and bandwidth
+            sigs["Bollinger Bands"] = sig(f"Below lower — oversold in range (ADX {adx_v:.1f}) · Lower: {bl:.2f}", "bull")
+    # Step 3: Within bands — show half, range context and bandwidth
     else:
-        half = "Upper half — mild bullish bias" if c > bm else "Lower half — mild bearish bias"
-        sigs["Bollinger Bands"] = f"{half} · BW: {bw_cur:.1f}% · Upper: {bu:.2f} / Lower: {bl:.2f}"
+        range_label, range_kind = _range_context()
+        if c > bm:
+            direction = "Neutral" if range_kind == "low" else "Bullish"
+            half = "Upper half"
+        else:
+            direction = "Neutral" if range_kind == "high" else "Bearish"
+            half = "Lower half"
+        sigs["Bollinger Bands"] = sig(f"{direction} — {half} · {range_label} · BW: {bw_cur:.1f}%", direction)
 
     # ── Volume confirmation (short + medium term only) ─────────────────────────
     if include_volume:
@@ -514,15 +555,15 @@ def signal_summary(df, use_ema=True, include_ma4=False, mom_df=None, macd_confir
                 is_up = float(last["close"]) >= float(last["open"])
                 if ratio >= 1.2:
                     if is_up:
-                        sigs["Volume"] = f"Bullish — up close, high volume (×{ratio:.2f})"
+                        sigs["Volume"] = sig(f"Bullish — up close, high volume (×{ratio:.2f})", "bull")
                     else:
-                        sigs["Volume"] = f"Bearish — down close, high volume (×{ratio:.2f})"
+                        sigs["Volume"] = sig(f"Bearish — down close, high volume (×{ratio:.2f})", "bear")
                 else:
-                    sigs["Volume"] = f"Neutral — average/low volume (×{ratio:.2f})"
+                    sigs["Volume"] = sig(f"Neutral — average/low volume (×{ratio:.2f})", "neut")
             else:
-                sigs["Volume"] = "N/A (insufficient history)"
+                sigs["Volume"] = sig("N/A (insufficient history)", "neut")
         except Exception:
-            sigs["Volume"] = "N/A"
+            sigs["Volume"] = sig("N/A", "neut")
 
     return sigs
 
@@ -533,24 +574,22 @@ def h(value):
     return html_escape(str(value), quote=True)
 
 
-def tag(text):
-    t = text.lower()
-    # Neutral override first — catches weakening/consolidating/squeeze/unclear states
-    if any(w in t for w in ["weakening", "consolidating", "x-over soon", "marginal",
-                             "unclear", "n/a", "insufficient", "squeeze"]):
-        return f'<span class="tag tag-neut">{h(text)}</span>'
-    # Explicit bear before "above" (handles "above upper — overbought")
-    if any(w in t for w in ["overbought", "band walking lower"]):
-        return f'<span class="tag tag-bear">{h(text)}</span>'
-    # Explicit bull before "below" (handles "below lower — oversold in range")
-    if any(w in t for w in ["oversold", "band walking upper"]):
-        return f'<span class="tag tag-bull">{h(text)}</span>'
-    # General bull / bear
-    if any(w in t for w in ["bull", "above", "golden", "crossover — bullish"]):
-        return f'<span class="tag tag-bull">{h(text)}</span>'
-    if any(w in t for w in ["bear", "below", "extended", "crossover — bearish"]):
-        return f'<span class="tag tag-bear">{h(text)}</span>'
-    return f'<span class="tag tag-neut">{h(text)}</span>'
+def signal_text(signal):
+    if isinstance(signal, dict):
+        return str(signal.get("text", ""))
+    return str(signal)
+
+
+def signal_direction(signal):
+    if isinstance(signal, dict):
+        direction = str(signal.get("direction", "neut")).lower()
+        return direction if direction in {"bull", "bear", "neut"} else "neut"
+    return "neut"
+
+
+def tag(signal):
+    direction = signal_direction(signal)
+    return f'<span class="tag tag-{direction}">{h(signal_text(signal))}</span>'
 
 
 def signals_html(sigs):
@@ -561,25 +600,8 @@ def signals_html(sigs):
 
 
 def overall_verdict(sigs):
-    _neutral_words = ["weakening", "consolidating", "x-over soon", "marginal",
-                      "unclear", "n/a", "insufficient", "squeeze"]
-
-    def _is_bull(v):
-        t = v.lower()
-        if any(w in t for w in _neutral_words): return False
-        if any(w in t for w in ["overbought", "band walking lower"]): return False
-        return any(w in t for w in ["bull", "above", "golden", "oversold",
-                                    "band walking upper", "crossover — bullish"])
-
-    def _is_bear(v):
-        t = v.lower()
-        if any(w in t for w in _neutral_words): return False
-        if any(w in t for w in ["oversold", "band walking upper"]): return False
-        return any(w in t for w in ["bear", "below", "overbought", "extended",
-                                    "band walking lower", "crossover — bearish"])
-
-    bull = sum(1 for v in sigs.values() if _is_bull(v))
-    bear = sum(1 for v in sigs.values() if _is_bear(v))
+    bull = sum(1 for v in sigs.values() if signal_direction(v) == "bull")
+    bear = sum(1 for v in sigs.values() if signal_direction(v) == "bear")
     total = len(sigs)
     score = bull - bear
     if score >= 2:
@@ -1085,6 +1107,15 @@ def main():
             print(f"  Warning: capital flow unavailable ({e})")
             capflow = {}
 
+        print("Fetching HSI benchmark kline …")
+        try:
+            df_hsi_d = fetch_kline(ctx, "HK.800000", KLType.K_DAY,  count=500, start=daily_start)
+            df_hsi_w = fetch_kline(ctx, "HK.800000", KLType.K_WEEK, count=400, start=weekly_start)
+        except Exception as e:
+            print(f"  Warning: HSI benchmark data unavailable ({e})")
+            df_hsi_d = None
+            df_hsi_w = None
+
     finally:
         ctx.close()
 
@@ -1093,6 +1124,50 @@ def main():
     short_sigs = signal_summary(df_d,  use_ema=True,  include_ma4=True,  macd_confirm=5, include_volume=True)                      # daily:   EMA9/20 cross, SMA200, volume
     med_sigs   = signal_summary(df_w,  use_ema=True,  include_ma4=True,  macd_confirm=3, use_mid_cross=True, include_volume=True)  # weekly:  EMA20/50 cross, SMA200, volume
     long_sigs  = signal_summary(df_wl, use_ema=False, include_ma4=False, macd_confirm=3)                                           # weekly SMA20/50/200 — no volume (too slow)
+
+    # ── Relative strength vs HSI benchmark ───────────────────────────────────
+    # Inner-join stock and HSI on time_key so both series reference the same
+    # calendar dates.  Without alignment, a suspended or recently-resumed stock
+    # would compare iloc[-N] bars from different calendar periods.
+
+    def _rs_signal(df_stock, df_bench, n_bars, threshold, label):
+        """Return RS signal string for one timeframe after date alignment."""
+        merged = pd.merge(
+            df_stock[["time_key", "close"]].rename(columns={"close": "stock"}),
+            df_bench[["time_key",  "close"]].rename(columns={"close": "hsi"}),
+            on="time_key", how="inner"
+        ).reset_index(drop=True)
+        if len(merged) < n_bars + 1:
+            return sig("N/A (insufficient history)", "neut")
+        stock_ret = (merged["stock"].iloc[-1] / merged["stock"].iloc[-(n_bars + 1)] - 1) * 100
+        hsi_ret   = (merged["hsi"].iloc[-1]   / merged["hsi"].iloc[-(n_bars + 1)]   - 1) * 100
+        rs        = stock_ret - hsi_ret
+        rs_str    = f"+{rs:.1f}pp" if rs >= 0 else f"{rs:.1f}pp"
+        if rs >= threshold:
+            return sig(f"Bullish — outperforming HSI by {rs_str} ({label})", "bull")
+        elif rs <= -threshold:
+            return sig(f"Bearish — underperforming HSI by {abs(rs):.1f}pp ({label})", "bear")
+        else:
+            return sig(f"Neutral — inline with HSI ({rs_str}, {label})", "neut")
+
+    # Medium-term: 4W ≈ 20 daily bars, threshold ±3.0pp
+    if df_hsi_d is not None:
+        try:
+            med_sigs["RS vs HSI (4W)"] = _rs_signal(df_d, df_hsi_d, n_bars=20, threshold=3.0, label="4W")
+        except Exception:
+            med_sigs["RS vs HSI (4W)"] = sig("N/A", "neut")
+    else:
+        med_sigs["RS vs HSI (4W)"] = sig("N/A (HSI data unavailable)", "neut")
+
+    # Long-term: 13W weekly bars, threshold ±5.0pp
+    if df_hsi_w is not None:
+        try:
+            long_sigs["RS vs HSI (13W)"] = _rs_signal(df_w, df_hsi_w, n_bars=13, threshold=5.0, label="13W")
+        except Exception:
+            long_sigs["RS vs HSI (13W)"] = sig("N/A", "neut")
+    else:
+        long_sigs["RS vs HSI (13W)"] = sig("N/A (HSI data unavailable)", "neut")
+
     long_signal_verdict = overall_verdict(long_sigs)
 
     # Key stat cards
